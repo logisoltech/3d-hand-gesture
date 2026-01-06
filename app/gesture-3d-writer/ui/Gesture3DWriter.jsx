@@ -74,6 +74,10 @@ export default function Gesture3DWriter() {
   const GRID_W = 34;
   const GRID_H = 22;
 
+  // Inset values must match GridOverlay
+  const INSET_X = 0.18;
+  const INSET_Y = 0.14;
+
   // pointer in DISPLAY coords (mirrored)
   const pointer = useMemo(() => ({ x: 0.5, y: 0.5 }), []);
 
@@ -192,8 +196,16 @@ export default function Gesture3DWriter() {
                 if (now - lastDropRef.current > 35) {
                   lastDropRef.current = now;
 
-                  const gx = Math.floor(pointer.x * GRID_W);
-                  const gy = Math.floor(pointer.y * GRID_H);
+                  // Map pointer to grid-relative coordinates (accounting for inset)
+                  const gridRelX = (pointer.x - INSET_X) / (1 - 2 * INSET_X);
+                  const gridRelY = (pointer.y - INSET_Y) / (1 - 2 * INSET_Y);
+
+                  // Clamp to grid bounds
+                  const clampedX = Math.max(0, Math.min(1, gridRelX));
+                  const clampedY = Math.max(0, Math.min(1, gridRelY));
+                  
+                  const gx = Math.floor(clampedX * (GRID_W - 1));
+                  const gy = Math.floor(clampedY * (GRID_H - 1));
 
                   const key = `${gx},${gy}`;
                   if (!voxelsRef.current.has(key)) {
@@ -256,9 +268,10 @@ export default function Gesture3DWriter() {
           objectFit: "cover",
           transform: "scaleX(-1)", // mirror selfie
           background: "#000",
+          zIndex: 1,
         }}
       />
-    <GridOverlay gridW={GRID_W} gridH={GRID_H} />
+      <GridOverlay gridW={GRID_W} gridH={GRID_H} />
 
       {/* 3D overlays (grid + voxels + pointer) */}
       <VoxelScene
@@ -268,7 +281,9 @@ export default function Gesture3DWriter() {
         gridH={GRID_H}
         pointer={pointer}
         pinching={pinching}
-        />
+        insetX={INSET_X}
+        insetY={INSET_Y}
+      />
 
       {/* Hand overlay */}
       <canvas
@@ -281,6 +296,7 @@ export default function Gesture3DWriter() {
           pointerEvents: "none",
           mixBlendMode: "screen",
           opacity: 0.95,
+          zIndex: 4,
         }}
       />
 
@@ -296,6 +312,7 @@ export default function Gesture3DWriter() {
           border: "1px solid rgba(255,255,255,.10)",
           color: "#fff",
           fontSize: 12,
+          zIndex: 10,
         }}
       >
         {ready ? (pinching ? "DRAWING (pinch)" : "READY") : status}
@@ -313,6 +330,7 @@ export default function Gesture3DWriter() {
           color: "#fff",
           fontSize: 12,
           opacity: 0.9,
+          zIndex: 10,
         }}
       >
         OK = clear

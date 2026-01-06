@@ -5,65 +5,44 @@ import { OrthographicCamera } from "@react-three/drei";
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 
-function Voxels({ voxelsRef, voxelsVersion, gridW, gridH }) {
-  const meshRef = useRef(null);
-  const maxCount = gridW * gridH;
+function Voxels({ voxelsRef, voxelsVersion, gridW, gridH, insetX = 0.18, insetY = 0.14 }) {
+  // Convert insets to NDC space (-1 to 1)
+  const ndcLeft = insetX * 2 - 1;
+  const ndcRight = (1 - insetX) * 2 - 1;
+  const ndcTop = 1 - insetY * 2;
 
-  const cellW = 2 / gridW;
-  const cellH = 2 / gridH;
+  const gridWidthNDC = ndcRight - ndcLeft;
+  const gridHeightNDC = ndcTop - (-ndcTop); // symmetric
 
-  const material = useMemo(
-    () =>
-      new THREE.MeshStandardMaterial({
-        color: new THREE.Color("#00E5FF"),
-        transparent: true,
-        opacity: 0.75,
-        roughness: 0.15,
-        metalness: 0.05,
-        emissive: new THREE.Color("#00CFFF"),
-        emissiveIntensity: 1.15,
-      }),
-    []
-  );
+  const cellW = gridWidthNDC / gridW;
+  const cellH = gridHeightNDC / gridH;
 
-  useEffect(() => {
-    const inst = meshRef.current;
-    if (!inst) return;
-
-    const dummy = new THREE.Object3D();
-    const keys = Array.from(voxelsRef.current);
-
-    let i = 0;
-
-    for (; i < keys.length && i < maxCount; i++) {
-      const [gx, gy] = keys[i].split(",").map(Number);
-
-      // Map grid to -1..1 world
-      const x = -1 + (gx + 0.5) * cellW;
-      const y = 1 - (gy + 0.5) * cellH;
-
-      dummy.position.set(x, y, 0.1); // keep above grid
-      dummy.scale.set(cellW * 0.9, cellH * 0.9, Math.min(cellW, cellH) * 0.7);
-      dummy.updateMatrix();
-      inst.setMatrixAt(i, dummy.matrix);
-    }
-
-    // hide remaining instances
-    for (; i < maxCount; i++) {
-      dummy.position.set(999, 999, 999);
-      dummy.scale.set(0, 0, 0);
-      dummy.updateMatrix();
-      inst.setMatrixAt(i, dummy.matrix);
-    }
-
-    inst.instanceMatrix.needsUpdate = true;
-  }, [voxelsVersion, voxelsRef, gridW, gridH, maxCount, cellW, cellH]);
+  // Convert Set to array for rendering
+  const voxelKeys = useMemo(() => {
+    return Array.from(voxelsRef.current);
+  }, [voxelsVersion, voxelsRef]);
 
   return (
-    <instancedMesh ref={meshRef} args={[null, null, maxCount]}>
-      <boxGeometry args={[1, 1, 1]} />
-      <primitive object={material} attach="material" />
-    </instancedMesh>
+    <group>
+      {voxelKeys.map((key) => {
+        const [gx, gy] = key.split(",").map(Number);
+        const x = ndcLeft + (gx + 0.5) * cellW;
+        const y = ndcTop - (gy + 0.5) * cellH;
+        
+        return (
+          <mesh key={key} position={[x, y, 0.5]}>
+            <boxGeometry args={[cellW * 0.85, cellH * 0.85, 0.1]} />
+            <meshStandardMaterial
+              color="#1a1a2e"
+              emissive="#2d2d44"
+              emissiveIntensity={0.8}
+              transparent
+              opacity={0.95}
+            />
+          </mesh>
+        );
+      })}
+    </group>
   );
 }
 
@@ -76,20 +55,22 @@ function PointerGlow({ pointer, pinching }) {
       const x = pointer.x * 2 - 1;
       const y = 1 - pointer.y * 2;
       ref.current.position.set(x, y, 0.35);
-      ref.current.scale.setScalar(pinching ? 0.09 : 0.07);
+      // Scale smaller for pinching feedback
+      const size = pinching ? 0.025 : 0.018;
+      ref.current.scale.set(size, size * 1.6, size); // stretch Y to compensate for aspect ratio
     }, 16);
     return () => clearInterval(t);
   }, [pointer, pinching]);
 
   return (
     <mesh ref={ref}>
-      <sphereGeometry args={[1, 28, 28]} />
+      <sphereGeometry args={[1, 16, 16]} />
       <meshStandardMaterial
-        color={"#00E5FF"}
-        emissive={"#00CFFF"}
-        emissiveIntensity={1.45}
+        color={"#3d3d5c"}
+        emissive={"#4a4a6a"}
+        emissiveIntensity={1.2}
         transparent
-        opacity={0.92}
+        opacity={0.9}
       />
     </mesh>
   );
@@ -102,6 +83,8 @@ export default function VoxelScene({
   gridH,
   pointer,
   pinching,
+  insetX = 0.18,
+  insetY = 0.14,
 }) {
   return (
     <Canvas
@@ -109,13 +92,22 @@ export default function VoxelScene({
         position: "absolute",
         inset: 0,
         pointerEvents: "none",
-        zIndex: 5, // make sure it's above grid overlay
+        zIndex: 3,
       }}
       gl={{ antialias: true, alpha: true }}
       dpr={[1, 2]}
       onCreated={({ gl }) => gl.setClearColor(0x000000, 0)}
     >
-      <OrthographicCamera makeDefault position={[0, 0, 10]} zoom={1} />
+      <OrthographicCamera 
+        makeDefault 
+        position={[0, 0, 10]} 
+        left={-1}
+        right={1}
+        top={1}
+        bottom={-1}
+        near={0.1}
+        far={100}
+      />
       <ambientLight intensity={1.05} />
       <directionalLight position={[2, 3, 6]} intensity={1.3} />
 
@@ -124,6 +116,8 @@ export default function VoxelScene({
         voxelsVersion={voxelsVersion}
         gridW={gridW}
         gridH={gridH}
+        insetX={insetX}
+        insetY={insetY}
       />
       <PointerGlow pointer={pointer} pinching={pinching} />
     </Canvas>

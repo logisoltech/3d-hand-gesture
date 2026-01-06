@@ -22,8 +22,8 @@ export default function GridOverlay({ gridW = 34, gridH = 22 }) {
 
       ctx.clearRect(0, 0, w, h);
 
-      // grid style (visible like your reference)
-      ctx.strokeStyle = "rgba(0, 229, 255, 0.18)";
+      // grid style - dark theme
+      ctx.strokeStyle = "rgba(40, 40, 60, 0.5)";
       ctx.lineWidth = 1;
 
       // optional: center area grid stronger
@@ -79,6 +79,7 @@ export default function GridOverlay({ gridW = 34, gridH = 22 }) {
         pointerEvents: "none",
         mixBlendMode: "screen",
         opacity: 1,
+        zIndex: 2,
       }}
     />
   );
