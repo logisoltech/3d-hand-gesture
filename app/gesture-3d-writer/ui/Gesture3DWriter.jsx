@@ -15,12 +15,24 @@ function isPinch(lm) {
 function fingerExtended(lm, tip, pip) {
   return lm[tip].y < lm[pip].y;
 }
-function isOK(lm) {
-  const pinch = isPinch(lm);
-  const middle = fingerExtended(lm, 12, 10);
-  const ring = fingerExtended(lm, 16, 14);
-  const pinky = fingerExtended(lm, 20, 18);
-  return pinch && middle && ring && pinky;
+function isFist(lm) {
+  // All fingers curled - fingertips below their PIP joints
+  const indexCurled = lm[8].y > lm[6].y;
+  const middleCurled = lm[12].y > lm[10].y;
+  const ringCurled = lm[16].y > lm[14].y;
+  const pinkyCurled = lm[20].y > lm[18].y;
+  // Thumb tucked in (tip close to palm or below index MCP)
+  const thumbTucked = lm[4].x > lm[3].x || dist(lm[4], lm[5]) < 0.08;
+  return indexCurled && middleCurled && ringCurled && pinkyCurled && thumbTucked;
+}
+
+function isPointing(lm) {
+  // Only index finger extended, others curled
+  const indexExtended = fingerExtended(lm, 8, 6);
+  const middleCurled = lm[12].y > lm[10].y;
+  const ringCurled = lm[16].y > lm[14].y;
+  const pinkyCurled = lm[20].y > lm[18].y;
+  return indexExtended && middleCurled && ringCurled && pinkyCurled;
 }
 
 function drawHand(ctx, lm, w, h) {
@@ -63,13 +75,19 @@ export default function Gesture3DWriter() {
 
   const [ready, setReady] = useState(false);
   const [pinching, setPinching] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [erasing, setErasing] = useState(false);
   const [status, setStatus] = useState("Loading…");
 
   const voxelsRef = useRef(new Set());
   const [voxelsVersion, setVoxelsVersion] = useState(0);
 
   const lastDropRef = useRef(0);
-  const lastOkRef = useRef(0);
+  const lastEraseRef = useRef(0);
+  
+  // For drag gesture
+  const dragStartRef = useRef(null); // { x, y } in grid-relative coords
+  const voxelOffsetRef = useRef({ x: 0, y: 0 }); // accumulated offset
 
   const GRID_W = 34;
   const GRID_H = 22;
@@ -140,7 +158,7 @@ export default function Gesture3DWriter() {
               "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
           },
           runningMode: "VIDEO",
-          numHands: 1,
+          numHands: 2,
         });
 
         setReady(true);
@@ -168,30 +186,143 @@ export default function Gesture3DWriter() {
           try {
             const res = handLandmarker.detectForVideo(video, performance.now());
 
+            // Process all detected hands
+            const hands = [];
             if (res?.landmarks?.length) {
-              const raw = res.landmarks[0];
+              for (let i = 0; i < res.landmarks.length; i++) {
+                const raw = res.landmarks[i];
+                // mirror coords so they match mirrored video
+                const lm = raw.map((p) => ({ x: 1 - p.x, y: p.y, z: p.z }));
+                
+                // Determine handedness (mirrored, so Left appears on right side)
+                const handedness = res.handednesses?.[i]?.[0]?.categoryName;
+                // After mirroring: "Left" hand appears on right side of screen
+                const isLeftHand = handedness === "Left";
+                
+                hands.push({ lm, isLeftHand });
+                drawHand(ctx, lm, w, h);
+              }
+            }
 
-              // mirror coords so they match mirrored video
-              const lm = raw.map((p) => ({ x: 1 - p.x, y: p.y, z: p.z }));
+            // Find hands by type
+            const leftHand = hands.find(h => h.isLeftHand);
+            const rightHand = hands.find(h => !h.isLeftHand);
 
-              pointer.x = lm[8].x;
-              pointer.y = lm[8].y;
+            // Use right hand for pointer (or first hand if only one)
+            const primaryHand = rightHand || leftHand;
+            
+            if (primaryHand) {
+              pointer.x = primaryHand.lm[8].x;
+              pointer.y = primaryHand.lm[8].y;
+            }
 
-              drawHand(ctx, lm, w, h);
+            // Check for erase mode: left fist + right pointing
+            let inEraseMode = false;
+            let erasePointer = null;
+            
+            if (leftHand && rightHand) {
+              const leftFist = isFist(leftHand.lm);
+              const rightPointing = isPointing(rightHand.lm);
+              
+              if (leftFist && rightPointing) {
+                inEraseMode = true;
+                erasePointer = { x: rightHand.lm[8].x, y: rightHand.lm[8].y };
+              }
+            }
+            
+            setErasing(inEraseMode);
 
-              const pinch = isPinch(lm);
-              setPinching(pinch);
-
-              if (isOK(lm)) {
-                const now = Date.now();
-                if (now - lastOkRef.current > 900) {
-                  lastOkRef.current = now;
-                  voxelsRef.current.clear();
+            if (inEraseMode && erasePointer) {
+              // Erase voxels under the pointing finger
+              const now = Date.now();
+              if (now - lastEraseRef.current > 50) {
+                lastEraseRef.current = now;
+                
+                const gridRelX = (erasePointer.x - INSET_X) / (1 - 2 * INSET_X);
+                const gridRelY = (erasePointer.y - INSET_Y) / (1 - 2 * INSET_Y);
+                
+                const clampedX = Math.max(0, Math.min(1, gridRelX));
+                const clampedY = Math.max(0, Math.min(1, gridRelY));
+                
+                const gx = Math.floor(clampedX * (GRID_W - 1));
+                const gy = Math.floor(clampedY * (GRID_H - 1));
+                
+                const key = `${gx},${gy}`;
+                if (voxelsRef.current.has(key)) {
+                  voxelsRef.current.delete(key);
                   setVoxelsVersion((v) => v + 1);
                 }
               }
+            }
 
-              if (pinch) {
+            // Single hand gestures (only when not in erase mode)
+            if (primaryHand && !inEraseMode) {
+              const lm = primaryHand.lm;
+              const pinch = isPinch(lm);
+              setPinching(pinch);
+
+              // Fist gesture - drag mode (only with single hand or right hand)
+              const fist = isFist(lm);
+              setDragging(fist);
+
+              if (fist) {
+                // Use palm center (landmark 0) for drag position
+                const palmX = lm[0].x;
+                const palmY = lm[0].y;
+                
+                // Map to grid-relative coords
+                const gridRelX = (palmX - INSET_X) / (1 - 2 * INSET_X);
+                const gridRelY = (palmY - INSET_Y) / (1 - 2 * INSET_Y);
+
+                if (dragStartRef.current === null) {
+                  // Start dragging
+                  dragStartRef.current = { x: gridRelX, y: gridRelY };
+                } else {
+                  // Continue dragging - calculate delta
+                  const deltaX = gridRelX - dragStartRef.current.x;
+                  const deltaY = gridRelY - dragStartRef.current.y;
+                  
+                  // Update offset
+                  voxelOffsetRef.current = {
+                    x: voxelOffsetRef.current.x + deltaX,
+                    y: voxelOffsetRef.current.y + deltaY,
+                  };
+                  
+                  // Update drag start for next frame
+                  dragStartRef.current = { x: gridRelX, y: gridRelY };
+                  
+                  // Trigger re-render
+                  setVoxelsVersion((v) => v + 1);
+                }
+              } else {
+                // Not fist anymore - if we were dragging, bake in the offset
+                if (dragStartRef.current !== null && voxelsRef.current.size > 0) {
+                  // Bake the offset into actual voxel positions
+                  const offsetGridX = Math.round(voxelOffsetRef.current.x * GRID_W);
+                  const offsetGridY = Math.round(voxelOffsetRef.current.y * GRID_H);
+                  
+                  if (offsetGridX !== 0 || offsetGridY !== 0) {
+                    const newVoxels = new Set();
+                    for (const key of voxelsRef.current) {
+                      const [gx, gy] = key.split(",").map(Number);
+                      const newGx = gx + offsetGridX;
+                      const newGy = gy + offsetGridY;
+                      // Only keep voxels that are still within grid bounds
+                      if (newGx >= 0 && newGx < GRID_W && newGy >= 0 && newGy < GRID_H) {
+                        newVoxels.add(`${newGx},${newGy}`);
+                      }
+                    }
+                    voxelsRef.current = newVoxels;
+                  }
+                  
+                  // Reset offset since it's now baked in
+                  voxelOffsetRef.current = { x: 0, y: 0 };
+                  setVoxelsVersion((v) => v + 1);
+                }
+                dragStartRef.current = null;
+              }
+
+              if (pinch && !fist) {
                 const now = Date.now();
                 if (now - lastDropRef.current > 35) {
                   lastDropRef.current = now;
@@ -214,8 +345,10 @@ export default function Gesture3DWriter() {
                   }
                 }
               }
-            } else {
+            } else if (!primaryHand) {
               setPinching(false);
+              setDragging(false);
+              dragStartRef.current = null;
             }
           } catch (e) {
             if (!disposed) console.warn("detectForVideo warning:", e);
@@ -281,6 +414,8 @@ export default function Gesture3DWriter() {
         gridH={GRID_H}
         pointer={pointer}
         pinching={pinching}
+        dragging={dragging}
+        voxelOffset={voxelOffsetRef.current}
         insetX={INSET_X}
         insetY={INSET_Y}
       />
@@ -315,7 +450,7 @@ export default function Gesture3DWriter() {
           zIndex: 10,
         }}
       >
-        {ready ? (pinching ? "DRAWING (pinch)" : "READY") : status}
+        {ready ? (erasing ? "ERASING" : dragging ? "DRAGGING (fist)" : pinching ? "DRAWING (pinch)" : "READY") : status}
       </div>
 
       <div
@@ -333,7 +468,7 @@ export default function Gesture3DWriter() {
           zIndex: 10,
         }}
       >
-        OK = clear
+        Fist=drag | L-fist+R-point=erase
       </div>
     </main>
   );

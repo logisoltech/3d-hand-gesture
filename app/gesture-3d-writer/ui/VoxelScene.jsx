@@ -5,7 +5,7 @@ import { OrthographicCamera } from "@react-three/drei";
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 
-function Voxels({ voxelsRef, voxelsVersion, gridW, gridH, insetX = 0.18, insetY = 0.14 }) {
+function Voxels({ voxelsRef, voxelsVersion, gridW, gridH, voxelOffset = { x: 0, y: 0 }, insetX = 0.18, insetY = 0.14 }) {
   // Convert insets to NDC space (-1 to 1)
   const ndcLeft = insetX * 2 - 1;
   const ndcRight = (1 - insetX) * 2 - 1;
@@ -17,6 +17,10 @@ function Voxels({ voxelsRef, voxelsVersion, gridW, gridH, insetX = 0.18, insetY 
   const cellW = gridWidthNDC / gridW;
   const cellH = gridHeightNDC / gridH;
 
+  // Convert offset from grid-relative (0-1) to NDC
+  const offsetX = voxelOffset.x * gridWidthNDC;
+  const offsetY = -voxelOffset.y * gridHeightNDC; // negative because Y is inverted
+
   // Convert Set to array for rendering
   const voxelKeys = useMemo(() => {
     return Array.from(voxelsRef.current);
@@ -26,8 +30,8 @@ function Voxels({ voxelsRef, voxelsVersion, gridW, gridH, insetX = 0.18, insetY 
     <group>
       {voxelKeys.map((key) => {
         const [gx, gy] = key.split(",").map(Number);
-        const x = ndcLeft + (gx + 0.5) * cellW;
-        const y = ndcTop - (gy + 0.5) * cellH;
+        const x = ndcLeft + (gx + 0.5) * cellW + offsetX;
+        const y = ndcTop - (gy + 0.5) * cellH + offsetY;
         
         return (
           <mesh key={key} position={[x, y, 0.5]}>
@@ -83,6 +87,8 @@ export default function VoxelScene({
   gridH,
   pointer,
   pinching,
+  dragging,
+  voxelOffset = { x: 0, y: 0 },
   insetX = 0.18,
   insetY = 0.14,
 }) {
@@ -116,6 +122,7 @@ export default function VoxelScene({
         voxelsVersion={voxelsVersion}
         gridW={gridW}
         gridH={gridH}
+        voxelOffset={voxelOffset}
         insetX={insetX}
         insetY={insetY}
       />
